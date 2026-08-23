@@ -6,7 +6,7 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build:
+  (build):
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -16,7 +16,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '3 17'
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -40,4 +40,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jd-monitor-apk
-          path:  app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/*.apk
