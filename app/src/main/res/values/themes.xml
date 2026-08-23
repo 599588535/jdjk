@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.JdMonitor" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#E1251B</item>
+        <item name="colorPrimaryDark">#B81C12</item>
+        <item name="colorAccent">#E1251B</item>
+        <item name="android:windowBackground">#F5F5F5</item>
+    </style>
+</resources>
