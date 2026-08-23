@@ -55,7 +55,7 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
             if (price <= p.target && !p.notified) {
                 sendNotify(ctx, "京东降价提醒",
                     "${p.name} 现价 ¥$price$tag，已低于目标 ¥${p.target}")
-                val ok = PushHelper.push(Prefs.getWxKey(ctx),
+                val ok = PushHelper.push(ctx, Prefs.getWxKey(ctx),
                     "京东降价：${p.name}", "现价 ¥$price$tag，目标 ¥${p.target}")
                 if (!ok) Prefs.appendLog(ctx, "  微信推送失败")
                 else Prefs.appendLog(ctx, "  已推送微信")
