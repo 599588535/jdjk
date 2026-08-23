@@ -1,5 +1,6 @@
 package com.example.jdmonitor
 
+import android.content.Context
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -14,7 +15,7 @@ object PushHelper {
         .build()
 
     // 自动识别：SCT 开头 → Server酱；其它 → PushPlus。返回是否成功
-    fun push(key: String, title: String, content: String): Boolean {
+    fun push(ctx: Context, key: String, title: String, content: String): Boolean {
         if (key.isEmpty()) return true
         return if (key.startsWith("SCT")) pushServerChan(key, title, content)
         else pushPlus(key, title, content)
@@ -30,7 +31,7 @@ object PushHelper {
             val o = JSONObject(body)
             return o.optInt("code", -1) == 0
         } catch (e: Exception) {
-            Prefs.appendLogSafe("微信(Server酱)推送异常：${e.message}")
+            Prefs.appendLog(ctx, "微信(Server酱)推送异常：${e.message}")
             return false
         }
     }
@@ -47,7 +48,7 @@ object PushHelper {
             val o = JSONObject(body)
             return o.optInt("code", -1) == 200
         } catch (e: Exception) {
-            Prefs.appendLogSafe("微信(PushPlus)推送异常：${e.message}")
+            Prefs.appendLog(ctx, "微信(PushPlus)推送异常：${e.message}")
             return false
         }
     }
