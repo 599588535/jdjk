@@ -17,11 +17,11 @@ object PushHelper {
     // 自动识别：SCT 开头 → Server酱；其它 → PushPlus。返回是否成功
     fun push(ctx: Context, key: String, title: String, content: String): Boolean {
         if (key.isEmpty()) return true
-        return if (key.startsWith("SCT")) pushServerChan(key, title, content)
-        else pushPlus(key, title, content)
+        return if (key.startsWith("SCT")) pushServerChan(ctx, key, title, content)
+        else pushPlus(ctx, key, title, content)
     }
 
-    private fun pushServerChan(key: String, title: String, content: String): Boolean {
+    private fun pushServerChan(ctx: Context, key: String, title: String, content: String): Boolean {
         try {
             val url = "https://sctapi.ftqq.com/$key.send?title=" +
                 URLEncoder.encode(title, "UTF-8") + "&desp=" + URLEncoder.encode(content, "UTF-8")
@@ -36,7 +36,7 @@ object PushHelper {
         }
     }
 
-    private fun pushPlus(token: String, title: String, content: String): Boolean {
+    private fun pushPlus(ctx: Context, token: String, title: String, content: String): Boolean {
         try {
             val url = "https://www.pushplus.plus/send?token=" +
                 URLEncoder.encode(token, "UTF-8") + "&title=" +
