@@ -2,7 +2,6 @@ package com.example.jdmonitor
 
 import android.app.Application
 import android.content.Intent
-import android.os.Process
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -10,7 +9,6 @@ import java.io.StringWriter
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
-        val def = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
                 val sw = StringWriter()
@@ -26,8 +24,6 @@ class App : Application() {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-            Process.killProcess(Process.myPid())
-            System.exit(1)
         }
     }
 }
