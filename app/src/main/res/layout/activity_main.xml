@@ -49,7 +49,7 @@
                     android:textSize="16sp"
                     android:layout_marginBottom="8dp" />
 
-                <TextView android:text="扫描间隔（小时，最短0.25）" android:textSize="13sp" android:layout_marginBottom="2dp" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="扫描间隔（小时，最短0.25）" android:textSize="13sp" android:layout_marginBottom="2dp" />
                 <EditText
                     android:id="@+id/etInterval"
                     android:layout_width="match_parent"
@@ -63,14 +63,14 @@
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:layout_marginBottom="8dp">
-                    <TextView android:text="活跃时段 " android:textSize="13sp" android:layout_gravity="center_vertical" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="活跃时段 " android:textSize="13sp" android:layout_gravity="center_vertical" />
                     <EditText android:id="@+id/etStart" android:layout_width="60dp" android:layout_height="wrap_content" android:inputType="number" android:hint="9" />
-                    <TextView android:text=" – " android:layout_gravity="center_vertical" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" – " android:layout_gravity="center_vertical" />
                     <EditText android:id="@+id/etEnd" android:layout_width="60dp" android:layout_height="wrap_content" android:inputType="number" android:hint="23" />
-                    <TextView android:text=" 点" android:layout_gravity="center_vertical" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text=" 点" android:layout_gravity="center_vertical" />
                 </LinearLayout>
 
-                <TextView android:text="微信提醒（可选）：Server酱SendKey 或 PushPlus token，留空则只发系统通知" android:textSize="12sp" android:textColor="#999999" android:layout_marginBottom="2dp" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="微信提醒（可选）：Server酱SendKey 或 PushPlus token，留空则只发系统通知" android:textSize="12sp" android:textColor="#999999" android:layout_marginBottom="2dp" />
                 <EditText
                     android:id="@+id/etWxKey"
                     android:layout_width="match_parent"
