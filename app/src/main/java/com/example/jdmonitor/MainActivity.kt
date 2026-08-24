@@ -15,6 +15,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+                // 若上次崩溃留下了日志，先显示报错页（此时进程健康，红页必弹；避免反复崩进主界面）
+        val crashFile = java.io.File(filesDir, "crash.txt")
+        if (crashFile.exists()) {
+            startActivity(Intent(this, CrashActivity::class.java))
+            finish()
+            return
+        }
+
         setContentView(R.layout.activity_main)
 
         if (android.os.Build.VERSION_CODES.TIRAMISU <= android.os.Build.VERSION.SDK_INT) {
