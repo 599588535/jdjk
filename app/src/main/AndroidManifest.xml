@@ -37,8 +37,7 @@
 
         <activity
             android:name=".CrashActivity"
-            android:exported="false"
-            android:process=":crash" />
+            android:exported="false" />
 
     </application>
 
