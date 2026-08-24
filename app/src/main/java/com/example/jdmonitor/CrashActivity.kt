@@ -26,6 +26,7 @@ class CrashActivity : AppCompatActivity() {
             Toast.makeText(this, "已复制，请粘贴发给我", Toast.LENGTH_LONG).show()
         }
         findViewById<Button>(R.id.btnClose).setOnClickListener {
+            try { java.io.File(filesDir, "crash.txt").delete() } catch (e: Exception) {}
             finishAffinity()
             System.exit(0)
         }
