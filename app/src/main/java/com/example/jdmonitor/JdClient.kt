@@ -153,7 +153,7 @@ object JdClient {
             """["']p["']\s*:\s*["']?([0-9]+\.?[0-9]*)"""                            // "p":"99.00"
         )
         for (p in patterns) {
-            val m = Regex(p, RegexOption.IGNORECASE).find(html)
+            val m = Regex(p, RegexOption.IGNORE_CASE).find(html)
             if (m != null) {
                 val v = m.groupValues[1].toDoubleOrNull()
                 // 过滤明显异常值（京东绝大部分商品价在 0.01 ~ 100万 之间）
