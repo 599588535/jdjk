@@ -6,11 +6,14 @@ import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetAddress
 import java.net.URLEncoder
+import java.net.UnknownHostException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -21,11 +24,61 @@ object JdClient {
     var lastError: String? = null
         private set
 
+    // ========== DoH（DNS-over-HTTPS）兜底：系统 DNS 被劫持/屏蔽时走阿里 DoH 解析真实 IP ==========
+    // 专门用于解析 DoH 服务器自身域名的客户端（不能用 DohDns，否则递归）
+    private val dohLookupClient = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
+
+    private object DohDns : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            // 1) 先试系统 DNS，正常就直接用
+            try {
+                val sys = Dns.SYSTEM.lookup(hostname)
+                if (sys.isNotEmpty()) return sys
+            } catch (_: Exception) {
+                // 系统 DNS 失败（如 p.3.cn 被劫持成 NXDOMAIN/内网地址），继续走 DoH
+            }
+            // 2) 阿里 DoH 兜底解析
+            try {
+                val req = Request.Builder()
+                    .url("https://dns.alidns.com/resolve?name=$hostname&type=A")
+                    .header("Accept", "application/dns-json")
+                    .build()
+                val resp = dohLookupClient.newCall(req).execute()
+                val body = resp.body?.string()
+                if (!body.isNullOrEmpty()) {
+                    val answers = JSONObject(body).optJSONArray("Answer")
+                    val list = ArrayList<InetAddress>()
+                    if (answers != null) {
+                        for (i in 0 until answers.length()) {
+                            val ip = answers.optJSONObject(i)?.optString("data") ?: ""
+                            if (ip.matches(Regex("""\d{1,3}(\.\d{1,3}){3}"""))) {
+                                // 过滤内网/保留地址，避免劫持到 10.x / 127.x
+                                if (!ip.startsWith("10.") && !ip.startsWith("127.") &&
+                                    !ip.startsWith("192.168.") && !ip.startsWith("0.")
+                                ) {
+                                    list.add(InetAddress.getByName(ip))
+                                }
+                            }
+                        }
+                    }
+                    if (list.isNotEmpty()) return list
+                }
+            } catch (_: Exception) {
+                // DoH 也失败则落到下面抛异常
+            }
+            throw UnknownHostException("无法解析 $hostname（系统DNS与DoH均失败）")
+        }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(DohDns)
         .build()
 
     private val UA_MOBILE =
@@ -49,7 +102,7 @@ object JdClient {
     fun getPrice(ctx: Context, sku: String, cookie: String): Pair<Double?, Boolean> {
         lastError = null
 
-        // 1) 公开价：p.3.cn 标准价格接口（多域名变体）
+        // 1) 公开价：p.3.cn 标准价格接口（DoH 加持）
         val pub = fetchPublicPrice(sku, cookie = "")
         if (pub != null) return Pair(pub, false)
 
@@ -206,11 +259,12 @@ object JdClient {
     }
 
     // ========== 4) WebView 真实渲染兜底（最可靠） ==========
-    // 在内存中创建 WebView 加载移动商品页，JS 完整执行后价格必然渲染出来；
-    // 轮询注入 JS 读取页面上的 ¥价格，取最大值（真实价通常大于优惠券面额）。
-    private fun fetchPriceViaWebView(ctx: Context, sku: String, cookie: String, timeoutMs: Long = 15000): Double? {
+    // 在内存中创建 WebView 加载移动商品页，JS 完整执行后价格必然渲染出来。
+    // 注意：后台 WebView 不做排版，innerText 恒为空，必须用 textContent（clone 后剔除 script/style）。
+    private fun fetchPriceViaWebView(ctx: Context, sku: String, cookie: String, timeoutMs: Long = 20000): Double? {
         val latch = CountDownLatch(1)
         val result = AtomicReference<Double?>()
+        val diag = AtomicReference("")   // 诊断信息：页面标题+片段
         val main = Handler(Looper.getMainLooper())
         try {
             main.post {
@@ -241,27 +295,36 @@ object JdClient {
                         if (finished) return
                         if (System.currentTimeMillis() - startTime > timeoutMs - 2500) {
                             finished = true
-                            webView?.destroy()
+                            try { webView?.destroy() } catch (_: Exception) {}
                             latch.countDown()
                             return
                         }
-                        webView?.evaluateJavascript(JS_EXTRACT_PRICE) { v ->
-                            val num = v?.trim('"')?.toDoubleOrNull()
-                            if (num != null && num > MIN_SANE_PRICE && num < 1000000) {
-                                finished = true
-                                result.set(num)
-                                webView?.destroy()
-                                latch.countDown()
-                            } else {
-                                main.postDelayed({ poll() }, 800)
+                        webView?.evaluateJavascript(JS_EXTRACT_PRICE) { raw ->
+                            val decoded = decodeJsString(raw)
+                            if (decoded != null) {
+                                try {
+                                    val o = JSONObject(decoded)
+                                    val p = o.optString("p", "").toDoubleOrNull()
+                                    val t = o.optString("t", "")
+                                    val s = o.optString("s", "")
+                                    if (t.isNotEmpty() || s.isNotEmpty()) diag.set("标题=$t 片段=$s")
+                                    if (p != null && p > MIN_SANE_PRICE && p < 1000000) {
+                                        finished = true
+                                        result.set(p)
+                                        try { webView?.destroy() } catch (_: Exception) {}
+                                        latch.countDown()
+                                        return@evaluateJavascript
+                                    }
+                                } catch (_: Exception) {}
                             }
+                            main.postDelayed({ poll() }, 800)
                         }
                     }
 
                     webView.webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView, url: String) {
-                            // 页面骨架完成后延迟 1.2 秒等价格异步渲染，再开始轮询
-                            main.postDelayed({ poll() }, 1200)
+                            // 页面骨架完成后延迟 1.5 秒等价格异步渲染，再开始轮询
+                            main.postDelayed({ poll() }, 1500)
                         }
                     }
                     webView.loadUrl("https://item.m.jd.com/product/$sku.html")
@@ -278,32 +341,64 @@ object JdClient {
 
         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         val price = result.get()
-        if (price == null) appendErr("WebView 渲染取价失败/超时")
+        if (price == null) {
+            val d = diag.get()
+            appendErr(if (d.isNotEmpty()) "WebView 未取到价格（$d）" else "WebView 渲染取价失败/超时")
+        }
         return price
     }
 
-    // 在渲染完成的页面里提取价格：
-    // 1) 常见价格选择器；2) 全文 ¥数字 取最大值（排除 <=1 的占位/券面额）
+    // evaluateJavascript 的返回值是 JSON 编码的字符串字面量（带引号和转义），先解码一层
+    private fun decodeJsString(raw: String?): String? {
+        if (raw.isNullOrEmpty() || raw == "null") return null
+        return try {
+            // 包成 JSON 数组解析，利用 org.json 完整处理转义
+            JSONArray("[$raw]").getString(0)
+        } catch (e: Exception) {
+            raw.trim('"')
+        }
+    }
+
+    // 在渲染完成的页面里提取价格，并回传诊断信息（JSON: {p:价格, t:标题, s:正文片段}）
+    // 关键：用 clone + textContent，规避后台 WebView 不排版导致 innerText 为空的问题
     private val JS_EXTRACT_PRICE = """
         (function(){
           try {
+            var price = '';
             var sels = ['.price-num', '.price .num', '.detail-price', '#price', '[class*="price"] [class*="num"]'];
             for (var i = 0; i < sels.length; i++) {
               var el = document.querySelector(sels[i]);
               if (el) {
-                var t = el.textContent.replace(/[^0-9.]/g, '');
-                if (t && parseFloat(t) > 1) return t;
+                var t = (el.textContent || '').replace(/[^0-9.]/g, '');
+                if (t && parseFloat(t) > 1) { price = t; break; }
               }
             }
-            var m = document.body.innerText.match(/¥\s*[0-9]+(\.[0-9]+)?/g) || [];
-            var nums = m.map(function(s){ return parseFloat(s.replace(/[^0-9.]/g, '')); })
-                        .filter(function(n){ return n > 1 && n < 1000000; });
-            if (nums.length) {
-              nums.sort(function(a, b){ return b - a; });
-              return String(nums[0]);
+            var txt = '';
+            if (document.body) {
+              var c = document.body.cloneNode(true);
+              var junk = c.querySelectorAll('script,style,noscript');
+              for (var j = 0; j < junk.length; j++) {
+                if (junk[j].parentNode) junk[j].parentNode.removeChild(junk[j]);
+              }
+              txt = (c.textContent || '').replace(/\s+/g, ' ');
             }
-            return '';
-          } catch (e) { return ''; }
+            if (!price) {
+              var m = txt.match(/¥\s*[0-9]+(\.[0-9]+)?/g) || [];
+              var nums = m.map(function(s){ return parseFloat(s.replace(/[^0-9.]/g, '')); })
+                          .filter(function(n){ return n > 1 && n < 1000000; });
+              if (nums.length) {
+                nums.sort(function(a, b){ return b - a; });
+                price = String(nums[0]);
+              }
+            }
+            return JSON.stringify({
+              p: price,
+              t: document.title || '',
+              s: txt.substring(0, 160)
+            });
+          } catch (e) {
+            return JSON.stringify({p: '', t: 'JS异常:' + e.message, s: ''});
+          }
         })()
     """.trimIndent()
 }
