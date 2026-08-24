@@ -46,7 +46,7 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
             }
             val (price, isAcc) = JdClient.getPrice(sku,  cookie)
             if (price == null) {
-                Prefs.appendLog(ctx, "  ${p.name}：获取价格失败")
+                Prefs.appendLog(ctx, " ${p.name}：获取价格失败（${JdClient.lastError ?: "未知原因"}）")
                 continue
             }
             p.lastPrice = price
