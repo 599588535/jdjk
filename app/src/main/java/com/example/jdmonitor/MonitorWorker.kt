@@ -50,7 +50,7 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
                 Prefs.appendLog(ctx, "  ${p.name}：无法识别商品ID，跳过")
                 continue
             }
-            val (price, isAcc) = JdClient.getPrice(sku,  cookie)
+            val (price, isAcc) = JdClient.getPrice(ctx, sku, cookie)
             if (price == null) {
                 Prefs.appendLog(ctx, "  ${p.name}：获取价格失败（${JdClient.lastError ?: "未知原因"}）")
                 continue
