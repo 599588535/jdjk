@@ -19,10 +19,15 @@ object Prefs {
         ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
     fun loadProducts(ctx: Context): MutableList<Product> {
-        val arr = JSONArray(sp(ctx).getString(KEY_PRODUCTS, "[]"))
         val list = ArrayList<Product>()
-        for (i in 0 until arr.length()) {
-            try { list.add(Product.fromJson(arr.getJSONObject(i))) } catch (e: Exception) {}
+        val raw = sp(ctx).getString(KEY_PRODUCTS, "[]") ?: "[]"
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                try { list.add(Product.fromJson(arr.getJSONObject(i))) } catch (e: Exception) {}
+            }
+        } catch (e: Exception) {
+            // 本地数据损坏时不崩，按空列表处理（用户可重新添加商品）
         }
         return list
     }
