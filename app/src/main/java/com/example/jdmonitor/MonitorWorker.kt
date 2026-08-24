@@ -39,6 +39,12 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
         Prefs.appendLog(ctx, "监控触发：检查 ${products.size} 个商品")
 
         for (p in products) {
+            // 清理历史误报：之前 HTML 解析抓到 1 元/3 元等占位价触发了 "已提醒"；
+            // 若 lastPrice 低于目标价 20%，大概率是误抓，重置状态避免永远不再提醒
+            if (p.notified && p.lastPrice > 0 && p.target > 0 && p.lastPrice < p.target * 0.2) {
+                p.notified = false
+                p.lastPrice = -1.0
+            }
             val sku = JdClient.extractSku(p.url)
             if (sku == null) {
                 Prefs.appendLog(ctx, "  ${p.name}：无法识别商品ID，跳过")
@@ -46,7 +52,7 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
             }
             val (price, isAcc) = JdClient.getPrice(sku,  cookie)
             if (price == null) {
-                Prefs.appendLog(ctx, " ${p.name}：获取价格失败（${JdClient.lastError ?: "未知原因"}）")
+                Prefs.appendLog(ctx, "  ${p.name}：获取价格失败（${JdClient.lastError ?: "未知原因"}）")
                 continue
             }
             p.lastPrice = price
