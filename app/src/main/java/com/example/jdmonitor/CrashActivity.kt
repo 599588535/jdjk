@@ -25,5 +25,9 @@ class CrashActivity : AppCompatActivity() {
             cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", text))
             Toast.makeText(this, "已复制，请粘贴发给我", Toast.LENGTH_LONG).show()
         }
+        findViewById<Button>(R.id.btnClose).setOnClickListener {
+            finishAffinity()
+            System.exit(0)
+        }
     }
 }
