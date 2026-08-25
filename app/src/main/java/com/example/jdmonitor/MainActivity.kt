@@ -15,7 +15,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-                // 若上次崩溃留下了日志，先显示报错页（此时进程健康，红页必弹；避免反复崩进主界面）
+
+        // 若上次崩溃留下了日志，先显示报错页（此时进程健康，红页必弹；避免反复崩进主界面）
         val crashFile = java.io.File(filesDir, "crash.txt")
         if (crashFile.exists()) {
             startActivity(Intent(this, CrashActivity::class.java))
@@ -45,6 +46,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnClearLog).setOnClickListener {
             Prefs.clearLog(this); renderLog()
         }
+
+        maybePromptAccessibility()
     }
 
     override fun onResume() {
@@ -52,6 +55,25 @@ class MainActivity : AppCompatActivity() {
         updateLoginStatus()
         renderProducts()
         renderLog()
+    }
+
+    // 首次打开时引导开启无障碍（京东App读屏抓价，最可靠）；开启后每次检查自动跳京东商品页读真实价格
+    private fun maybePromptAccessibility() {
+        if (PriceReaderService.isEnabled(this)) {
+            Prefs.appendLog(this, "无障碍已开启：将使用京东App读屏抓价（最可靠）")
+            return
+        }
+        val sp = getSharedPreferences("jd_monitor_prefs", MODE_PRIVATE)
+        if (sp.getBoolean("acc_asked", false)) return
+        sp.edit().putBoolean("acc_asked", true).apply()
+        AlertDialog.Builder(this)
+            .setTitle("推荐：开启京东App抓价")
+            .setMessage("后台静默抓价在你的网络下失败率高。\n\n开启「无障碍服务」后，每次检查会自动打开京东 App 的商品页，直接读取你看到的真实价格（含你的账号价），读完自动跳回。\n\n点「去开启」→ 在列表找到「京东降价监控」→ 打开开关。")
+            .setPositiveButton("去开启") { _, _ ->
+                try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Exception) {}
+            }
+            .setNegativeButton("暂不", null)
+            .show()
     }
 
     private fun loadPrefsToUi() {
