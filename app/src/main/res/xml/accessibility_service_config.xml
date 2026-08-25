@@ -3,5 +3,5 @@
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:canRetrieveWindowContent="true"
-    android:description="京东降价监控：读取京东商品页价格用于降价提醒"
+    android:description="@string/acc_service_desc"
     android:notificationTimeout="100" />
