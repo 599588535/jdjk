@@ -72,6 +72,7 @@ object JdClient {
 
     // ========== 主通道：跳京东 App 商品页 + 无障碍读屏 ==========
     // 跳转用 http 链接（京东 App Links 每次都会强制打开新页面，避免 openapp 协议"京东已运行时不再跳"的问题）
+    // 所有关键跳转优先由无障碍服务发起（特权通道，不受安卓"后台禁止启动界面"限制）
     private fun fetchViaJdApp(ctx: Context, sku: String, timeoutMs: Long = 25000): Double? {
         return try {
             PriceReaderService.reset()
@@ -86,8 +87,13 @@ object JdClient {
                     }
                     val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    ctx.startActivity(i)
-                    true
+                    // 优先特权通道（无障碍服务发起，不受后台启动限制）；失败再用普通方式
+                    PriceReaderService.startActivitySafe(i) || try {
+                        ctx.startActivity(i)
+                        true
+                    } catch (e: Exception) {
+                        false
+                    }
                 } catch (e: Exception) {
                     false
                 }
@@ -102,6 +108,14 @@ object JdClient {
                 return null
             }
             Prefs.appendLog(ctx, "    已跳转商品页（SKU=$sku），等待读屏…")
+
+            // 跳转后检测界面是否真的切过去了（2.5 秒后看前台包名）
+            Thread.sleep(2500)
+            val pkgNow = PriceReaderService.currentPkg
+            if (pkgNow == ctx.packageName || pkgNow.isEmpty()) {
+                Prefs.appendLog(ctx, "    跳转未生效（仍在前台），用特权通道重试…")
+                doLaunch(false)
+            }
 
             val start = System.currentTimeMillis()
             var lastProgressLog = 0L
@@ -145,13 +159,15 @@ object JdClient {
         }
     }
 
-    // 读完价格后跳回本 App
+    // 读完价格后跳回本 App（优先特权通道，App 在后台时普通方式会被系统拦截）
     private fun backToSelf(ctx: Context) {
         try {
             val i = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
             if (i != null) {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                ctx.startActivity(i)
+                if (!PriceReaderService.startActivitySafe(i)) {
+                    try { ctx.startActivity(i) } catch (_: Exception) {}
+                }
             }
         } catch (_: Exception) {}
     }
