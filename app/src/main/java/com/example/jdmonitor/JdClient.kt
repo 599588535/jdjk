@@ -1,6 +1,8 @@
 package com.example.jdmonitor
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -24,7 +26,7 @@ object JdClient {
     // 价格下限：低于 10 元一律视为分期数/券面额/占位，绝不采用（防误报第一原则）
     private const val MIN_PRICE = 10.0
 
-    // 全局复用的 WebView（避免小米等 ROM 上频繁创建/销毁导致异常）
+    // 全局复用的 WebView（兜底通道用，避免频繁创建/销毁）
     @Volatile
     private var sharedWebView: WebView? = null
 
@@ -36,19 +38,92 @@ object JdClient {
         return m?.groupValues?.get(1)
     }
 
-    // 返回：价格, 是否带登录态抓取
-    // 唯一通道：WebView 真实渲染（京东已关停所有免签名价格接口，均不可用）
+    // 返回：价格, 是否为账号价
+    // 主通道：拉起京东 App 商品页 + 无障碍读屏（真实价格，含京东 App 登录态，最可靠）
+    // 兜底通道：后台 WebView 渲染移动商品页（无障碍未开启时使用）
     fun getPrice(ctx: Context, sku: String, cookie: String): Pair<Double?, Boolean> {
         lastError = null
-        val price = fetchPriceViaWebView(ctx, sku, cookie)
-        return Pair(price, cookie.isNotEmpty())
+
+        if (PriceReaderService.isEnabled(ctx)) {
+            val p = fetchViaJdApp(ctx, sku)
+            if (p != null) return Pair(p, true)
+            appendErr("京东App读屏未取到价格，转 WebView 兜底")
+        } else {
+            appendErr("无障碍未开启（仅 WebView 通道）")
+        }
+
+        val wv = fetchPriceViaWebView(ctx, sku, cookie)
+        if (wv != null) return Pair(wv, cookie.isNotEmpty())
+
+        return Pair(null, false)
     }
 
-    // ========== WebView 真实渲染取价 ==========
+    private fun appendErr(msg: String) {
+        lastError = if (lastError.isNullOrBlank()) msg else "$lastError\n$msg"
+    }
+
+    // ========== 主通道：跳京东 App 商品页 + 无障碍读屏 ==========
+    private fun fetchViaJdApp(ctx: Context, sku: String, timeoutMs: Long = 20000): Double? {
+        return try {
+            PriceReaderService.reset()
+
+            // 拉起京东 App 商品详情页；未安装京东则用系统浏览器打开移动商品页（同样可读屏）
+            val deepLink = "openapp.jdmobile://virtual?params=" +
+                Uri.encode("{\"category\":\"jump\",\"des\":\"productDetail\",\"skuId\":\"$sku\"}")
+            val launched = try {
+                val i = Intent(Intent.ACTION_VIEW, Uri.parse(deepLink))
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(i)
+                true
+            } catch (e: Exception) {
+                try {
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://item.m.jd.com/product/$sku.html"))
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ctx.startActivity(i)
+                    true
+                } catch (e2: Exception) {
+                    false
+                }
+            }
+            if (!launched) {
+                appendErr("无法拉起京东App/浏览器")
+                return null
+            }
+
+            // 等页面加载渲染，轮询读屏结果（每秒一次）
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < timeoutMs) {
+                Thread.sleep(1000)
+                val p = PriceReaderService.lastPrice
+                if (p != null && p >= MIN_PRICE && p < 1000000) {
+                    backToSelf(ctx)
+                    return p
+                }
+            }
+            backToSelf(ctx)
+            appendErr("读屏超时，屏幕文本=${PriceReaderService.lastPageText.take(140)}")
+            null
+        } catch (e: Exception) {
+            appendErr("京东App通道异常：${e.message}")
+            null
+        }
+    }
+
+    // 读完价格后跳回本 App
+    private fun backToSelf(ctx: Context) {
+        try {
+            val i = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                ctx.startActivity(i)
+            }
+        } catch (_: Exception) {}
+    }
+
+    // ========== 兜底通道：WebView 真实渲染 ==========
     // 决策规则（防误报优先）：
     //   sp = 高可信选择器价格，需 >=10 且连续 2 次一致；
-    //   fp = 正文中第一个 >=10 的 ¥数字（主价区在页面上方，推荐位高价在下方不会误取），需连续 3 次一致且已过 4 秒；
-    //   低于 10 元一律拒绝；25 秒超时返回 null 并带页面标题/片段诊断。
+    //   fp = 正文中第一个 >=10 的 ¥数字（主价区在页面上方），需连续 3 次一致且已过 4 秒。
     private fun fetchPriceViaWebView(ctx: Context, sku: String, cookie: String, timeoutMs: Long = 25000): Double? {
         val latch = CountDownLatch(1)
         val result = AtomicReference<Double?>()
@@ -57,19 +132,16 @@ object JdClient {
 
         main.post {
             try {
-                // 复用全局 WebView；没有才创建
                 var wv = sharedWebView
                 if (wv == null) {
                     wv = WebView(ctx.applicationContext)
                     wv.settings.javaScriptEnabled = true
                     wv.settings.domStorageEnabled = true
                     wv.settings.userAgentString = UA_MOBILE
-                    // 空的 WebViewClient：防止页面重定向跳到外部浏览器
                     wv.webViewClient = WebViewClient()
                     sharedWebView = wv
                 }
 
-                // 每次抓取前注入最新登录 cookie（如有）。Domain=.jd.com 让页面内 XHR 子域请求也带登录态。
                 if (cookie.isNotEmpty()) {
                     try {
                         val cm = CookieManager.getInstance()
@@ -94,7 +166,7 @@ object JdClient {
                     if (finished) return
                     finished = true
                     result.set(price)
-                    latch.countDown()   // 不 destroy，WebView 留给下一个商品复用
+                    latch.countDown()
                 }
 
                 fun poll() {
@@ -117,7 +189,6 @@ object JdClient {
 
                                 val sp = o.optString("sp", "").toDoubleOrNull()
                                 val fp = o.optString("fp", "").toDoubleOrNull()
-                                // 候选价：选择器优先，其次第一个>=10的¥数字
                                 val cand: Double?
                                 val needStable: Int
                                 val needElapsedMs: Long
@@ -147,7 +218,6 @@ object JdClient {
                 }
 
                 wv.loadUrl("https://item.m.jd.com/product/$sku.html")
-                // 不依赖 onPageFinished（重定向链中回调时机不可靠），2.5 秒后直接开始轮询
                 main.postDelayed({ poll() }, 2500)
             } catch (e: Exception) {
                 diag.set("WebView 初始化异常：${e.message}")
@@ -160,7 +230,7 @@ object JdClient {
         val price = result.get()
         if (price == null) {
             val d = diag.get()
-            lastError = if (d.isNotEmpty()) "WebView 未取到价格（$d）" else "WebView 渲染取价失败/超时"
+            appendErr(if (d.isNotEmpty()) "WebView 未取到价格（$d）" else "WebView 渲染取价失败/超时")
         }
         return price
     }
@@ -175,11 +245,7 @@ object JdClient {
         }
     }
 
-    // 页面内价格提取（已经过 jsdom 6 场景测试全通过：骨架屏/3期免息防误报/推荐高价不盖主价/
-    // 纯券拒绝/划线价/分期小额+主价）
-    // 返回 JSON：sp=高可信选择器价(>=10), fp=第一个>=10的¥价, mp=最大¥价(诊断), t=标题, s=片段
-    // 注意：必须用 clone+textContent（后台 WebView 不排版，innerText 恒为空）；
-    //       选择器不含模糊 [class*="price"]（会误命中"3期免息"等元素）。
+    // 页面内价格提取（已经过 jsdom 6 场景测试全通过）
     private val JS_EXTRACT_PRICE = """
         (function(){
           try {
