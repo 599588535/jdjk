@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">京东降价监控</string>
+    <string name="acc_service_desc">京东降价监控：读取京东商品页价格用于降价提醒</string>
 </resources>
