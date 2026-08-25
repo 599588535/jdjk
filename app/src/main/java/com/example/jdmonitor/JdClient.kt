@@ -110,10 +110,10 @@ object JdClient {
                 Thread.sleep(1000)
                 val p = PriceReaderService.lastPrice
                 val pkg = PriceReaderService.lastPricePkg
-                val ok = p != null && p >= MIN_PRICE && p < 1000000 &&
+                // 直接内联判断，让 Kotlin 对 p 做智能转换为非空 Double
+                if (p != null && p >= MIN_PRICE && p < 1000000 &&
                     pkg.isNotEmpty() && pkg != ctx.packageName
-
-                if (ok) {
+                ) {
                     if (p == lastReturnedPrice) {
                         // 读到的价格与上一商品相同 → 京东很可能停留在旧页面，重新跳转一次
                         if (!retried && System.currentTimeMillis() - start >= 5000) {
