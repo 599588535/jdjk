@@ -21,9 +21,12 @@ object JdClient {
     private val UA_MOBILE =
         "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
-    // 价格合理性门槛
-    private const val MIN_SELECTOR_PRICE = 1.0    // 选择器命中的价格（高可信）
-    private const val MIN_FULLTEXT_PRICE = 10.0   // 全文匹配的价格（低可信，要求更高，防券面额误报）
+    // 价格下限：低于 10 元一律视为分期数/券面额/占位，绝不采用（防误报第一原则）
+    private const val MIN_PRICE = 10.0
+
+    // 全局复用的 WebView（避免小米等 ROM 上频繁创建/销毁导致异常）
+    @Volatile
+    private var sharedWebView: WebView? = null
 
     // 从用户输入（纯数字ID 或 任意京东链接）中提取商品ID
     fun extractSku(input: String): String? {
@@ -33,9 +36,8 @@ object JdClient {
         return m?.groupValues?.get(1)
     }
 
-    // 返回：价格, 是否为账号价
-    // 唯一通道：WebView 真实渲染（京东已关停所有免签名价格接口：
-    // p.3.cn 公网解析全为内网IP、api.m.jd.com 需 h5st 签名、skudata 频控，均不可用）
+    // 返回：价格, 是否带登录态抓取
+    // 唯一通道：WebView 真实渲染（京东已关停所有免签名价格接口，均不可用）
     fun getPrice(ctx: Context, sku: String, cookie: String): Pair<Double?, Boolean> {
         lastError = null
         val price = fetchPriceViaWebView(ctx, sku, cookie)
@@ -43,26 +45,31 @@ object JdClient {
     }
 
     // ========== WebView 真实渲染取价 ==========
-    // 在内存中创建 WebView 加载移动商品页，页面自身 JS 会完成签名请求并渲染价格；
-    // 轮询注入 JS 读价：选择器命中（高可信）一次即用；全文匹配（低可信）需 >=10元 且连续3次一致。
+    // 决策规则（防误报优先）：
+    //   sp = 高可信选择器价格，需 >=10 且连续 2 次一致；
+    //   fp = 正文中第一个 >=10 的 ¥数字（主价区在页面上方，推荐位高价在下方不会误取），需连续 3 次一致且已过 4 秒；
+    //   低于 10 元一律拒绝；25 秒超时返回 null 并带页面标题/片段诊断。
     private fun fetchPriceViaWebView(ctx: Context, sku: String, cookie: String, timeoutMs: Long = 25000): Double? {
         val latch = CountDownLatch(1)
         val result = AtomicReference<Double?>()
         val diag = AtomicReference("")
-        val webViewRef = AtomicReference<WebView?>()
         val main = Handler(Looper.getMainLooper())
 
         main.post {
             try {
-                val wv = WebView(ctx.applicationContext)
-                webViewRef.set(wv)
-                wv.settings.javaScriptEnabled = true
-                wv.settings.domStorageEnabled = true
-                wv.settings.userAgentString = UA_MOBILE
-                // 空的 WebViewClient：防止页面重定向跳到外部浏览器
-                wv.webViewClient = WebViewClient()
+                // 复用全局 WebView；没有才创建
+                var wv = sharedWebView
+                if (wv == null) {
+                    wv = WebView(ctx.applicationContext)
+                    wv.settings.javaScriptEnabled = true
+                    wv.settings.domStorageEnabled = true
+                    wv.settings.userAgentString = UA_MOBILE
+                    // 空的 WebViewClient：防止页面重定向跳到外部浏览器
+                    wv.webViewClient = WebViewClient()
+                    sharedWebView = wv
+                }
 
-                // 注入登录 cookie（如有）。Domain=.jd.com 让页面内 XHR 子域请求也能带上登录态。
+                // 每次抓取前注入最新登录 cookie（如有）。Domain=.jd.com 让页面内 XHR 子域请求也带登录态。
                 if (cookie.isNotEmpty()) {
                     try {
                         val cm = CookieManager.getInstance()
@@ -80,16 +87,14 @@ object JdClient {
                 val startTime = System.currentTimeMillis()
                 var firstPollTime = 0L
                 var finished = false
-                var lastAp = -1.0
+                var lastCand = -1.0
                 var stableCount = 0
 
                 fun finish(price: Double?) {
                     if (finished) return
                     finished = true
                     result.set(price)
-                    try { webViewRef.get()?.destroy() } catch (_: Exception) {}
-                    webViewRef.set(null)
-                    latch.countDown()
+                    latch.countDown()   // 不 destroy，WebView 留给下一个商品复用
                 }
 
                 fun poll() {
@@ -99,8 +104,8 @@ object JdClient {
                         finish(null)
                         return
                     }
-                    val wv = webViewRef.get() ?: run { finish(null); return }
-                    wv.evaluateJavascript(JS_EXTRACT_PRICE) { raw ->
+                    val cur = sharedWebView ?: run { finish(null); return }
+                    cur.evaluateJavascript(JS_EXTRACT_PRICE) { raw ->
                         if (finished) return@evaluateJavascript
                         try {
                             val decoded = decodeJsString(raw)
@@ -110,24 +115,30 @@ object JdClient {
                                 val s = o.optString("s", "")
                                 if (t.isNotEmpty() || s.isNotEmpty()) diag.set("标题=$t 片段=$s")
 
-                                // 1) 选择器命中：高可信，一次即用
                                 val sp = o.optString("sp", "").toDoubleOrNull()
-                                if (sp != null && sp > MIN_SELECTOR_PRICE && sp < 1000000) {
-                                    finish(sp)
-                                    return@evaluateJavascript
+                                val fp = o.optString("fp", "").toDoubleOrNull()
+                                // 候选价：选择器优先，其次第一个>=10的¥数字
+                                val cand: Double?
+                                val needStable: Int
+                                val needElapsedMs: Long
+                                if (sp != null && sp >= MIN_PRICE && sp < 1000000) {
+                                    cand = sp; needStable = 2; needElapsedMs = 0
+                                } else if (fp != null && fp >= MIN_PRICE && fp < 1000000) {
+                                    cand = fp; needStable = 3; needElapsedMs = 4000
+                                } else {
+                                    cand = null; needStable = 0; needElapsedMs = 0
                                 }
-                                // 2) 全文最大价：低可信，需 >=10元 且连续3次一致 且已过4秒（等价格XHR渲染稳定）
-                                val ap = o.optString("ap", "").toDoubleOrNull()
-                                if (ap != null && ap >= MIN_FULLTEXT_PRICE && ap < 1000000) {
-                                    if (ap == lastAp) stableCount++ else { stableCount = 1; lastAp = ap }
+
+                                if (cand != null) {
+                                    if (cand == lastCand) stableCount++ else { stableCount = 1; lastCand = cand }
                                     val elapsed = System.currentTimeMillis() - firstPollTime
-                                    if (stableCount >= 3 && elapsed >= 4000) {
-                                        finish(ap)
+                                    if (stableCount >= needStable && elapsed >= needElapsedMs) {
+                                        finish(cand)
                                         return@evaluateJavascript
                                     }
                                 } else {
                                     stableCount = 0
-                                    lastAp = -1.0
+                                    lastCand = -1.0
                                 }
                             }
                         } catch (_: Exception) {}
@@ -145,11 +156,6 @@ object JdClient {
         }
 
         latch.await(timeoutMs + 3000, TimeUnit.MILLISECONDS)
-        // 兜底清理：若 await 超时但 WebView 还在（极端情况），主线程销毁
-        main.post {
-            try { webViewRef.get()?.destroy() } catch (_: Exception) {}
-            webViewRef.set(null)
-        }
 
         val price = result.get()
         if (price == null) {
@@ -169,20 +175,22 @@ object JdClient {
         }
     }
 
-    // 页面内价格提取（已经过 jsdom 场景测试：骨架屏/选择器/全文/纯券/区间价/含¥ 全通过）
-    // 返回 JSON：sp=选择器价, ap=全文最大¥价, t=页面标题, s=正文片段（诊断用）
-    // 注意：必须用 clone+textContent（后台 WebView 不排版，innerText 恒为空）
+    // 页面内价格提取（已经过 jsdom 6 场景测试全通过：骨架屏/3期免息防误报/推荐高价不盖主价/
+    // 纯券拒绝/划线价/分期小额+主价）
+    // 返回 JSON：sp=高可信选择器价(>=10), fp=第一个>=10的¥价, mp=最大¥价(诊断), t=标题, s=片段
+    // 注意：必须用 clone+textContent（后台 WebView 不排版，innerText 恒为空）；
+    //       选择器不含模糊 [class*="price"]（会误命中"3期免息"等元素）。
     private val JS_EXTRACT_PRICE = """
         (function(){
           try {
             var sp = '';
-            var sels = ['.price-num', '.price .num', '.detail-price', '#price', '[class*="price"] [class*="num"]',
-                        '.price', '.big-price', '.current-price', '.jd-price', '.sale-price'];
+            var sels = ['.price-num', '.price .num', '.detail-price', '#price',
+                        '.big-price', '.current-price', '.jd-price', '.sale-price'];
             for (var i = 0; i < sels.length; i++) {
               var el = document.querySelector(sels[i]);
               if (el) {
                 var mm = (el.textContent || '').match(/[0-9]+(\.[0-9]+)?/);
-                if (mm && parseFloat(mm[0]) > 1) { sp = mm[0]; break; }
+                if (mm && parseFloat(mm[0]) >= 10) { sp = mm[0]; break; }
               }
             }
             var txt = '';
@@ -194,21 +202,25 @@ object JdClient {
               }
               txt = (c.textContent || '').replace(/\s+/g, ' ');
             }
-            var ap = '';
+            var fp = '';
+            var mp = '';
             var m = txt.match(/¥\s*[0-9]+(\.[0-9]+)?/g) || [];
             var nums = m.map(function(s){ return parseFloat(s.replace(/[^0-9.]/g, '')); })
                         .filter(function(n){ return n > 1 && n < 1000000; });
+            for (var k = 0; k < nums.length; k++) {
+              if (nums[k] >= 10) { fp = String(nums[k]); break; }
+            }
             if (nums.length) {
-              nums.sort(function(a, b){ return b - a; });
-              ap = String(nums[0]);
+              var sorted = nums.slice().sort(function(a, b){ return b - a; });
+              mp = String(sorted[0]);
             }
             return JSON.stringify({
-              sp: sp, ap: ap,
+              sp: sp, fp: fp, mp: mp,
               t: document.title || '',
               s: txt.substring(0, 160)
             });
           } catch (e) {
-            return JSON.stringify({sp: '', ap: '', t: 'JS异常:' + e.message, s: ''});
+            return JSON.stringify({sp: '', fp: '', mp: '', t: 'JS异常:' + e.message, s: ''});
           }
         })()
     """.trimIndent()
