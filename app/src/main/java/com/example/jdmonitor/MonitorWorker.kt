@@ -36,6 +36,7 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
         }
 
         val cookie = Prefs.getCookie(ctx)
+        JdClient.beginRound()
         Prefs.appendLog(ctx, "监控触发：检查 ${products.size} 个商品")
 
         var index = 0
