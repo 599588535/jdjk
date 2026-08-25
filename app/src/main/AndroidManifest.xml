@@ -40,6 +40,19 @@
             android:exported="false"
             android:process=":crash" />
 
+        <!-- 无障碍读屏服务：拉起京东商品页后读取屏幕上的真实价格 -->
+        <service
+            android:name=".PriceReaderService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
     </application>
 
 </manifest>
