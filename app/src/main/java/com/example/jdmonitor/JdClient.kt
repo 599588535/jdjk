@@ -70,6 +70,7 @@ object JdClient {
             // 拉起京东 App 商品详情页；未安装京东则用系统浏览器打开移动商品页（同样可读屏）
             val deepLink = "openapp.jdmobile://virtual?params=" +
                 Uri.encode("{\"category\":\"jump\",\"des\":\"productDetail\",\"skuId\":\"$sku\"}")
+            var viaBrowser = false
             val launched = try {
                 val i = Intent(Intent.ACTION_VIEW, Uri.parse(deepLink))
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -80,6 +81,7 @@ object JdClient {
                     val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://item.m.jd.com/product/$sku.html"))
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     ctx.startActivity(i)
+                    viaBrowser = true
                     true
                 } catch (e2: Exception) {
                     false
@@ -87,24 +89,39 @@ object JdClient {
             }
             if (!launched) {
                 appendErr("无法拉起京东App/浏览器")
+                Prefs.appendLog(ctx, "    拉起京东App/浏览器失败")
                 return null
             }
+            Prefs.appendLog(ctx, if (viaBrowser) "    已用浏览器打开商品页，等待读屏…" else "    已拉起京东App商品页，等待读屏…")
 
             // 等页面加载渲染，轮询读屏结果（每秒一次）
+            // 注意校验来源包名：只接受京东/浏览器界面读到的价格，防止本 App 界面残留污染
             val start = System.currentTimeMillis()
+            var lastProgressLog = 0L
             while (System.currentTimeMillis() - start < timeoutMs) {
                 Thread.sleep(1000)
                 val p = PriceReaderService.lastPrice
-                if (p != null && p >= MIN_PRICE && p < 1000000) {
+                val pkg = PriceReaderService.lastPricePkg
+                if (p != null && p >= MIN_PRICE && p < 1000000 &&
+                    pkg.isNotEmpty() && pkg != ctx.packageName
+                ) {
+                    Prefs.appendLog(ctx, "    读屏成功：¥$p（来源 $pkg）")
                     backToSelf(ctx)
                     return p
+                }
+                // 每 5 秒报一次进度，避免日志看起来像"卡住不动"
+                if (System.currentTimeMillis() - lastProgressLog >= 5000) {
+                    lastProgressLog = System.currentTimeMillis()
+                    Prefs.appendLog(ctx, "    等待页面价格渲染…（${(System.currentTimeMillis() - start) / 1000}秒）")
                 }
             }
             backToSelf(ctx)
             appendErr("读屏超时，屏幕文本=${PriceReaderService.lastPageText.take(140)}")
+            Prefs.appendLog(ctx, "    读屏超时（20秒）")
             null
         } catch (e: Exception) {
             appendErr("京东App通道异常：${e.message}")
+            Prefs.appendLog(ctx, "    京东App通道异常：${e.message}")
             null
         }
     }

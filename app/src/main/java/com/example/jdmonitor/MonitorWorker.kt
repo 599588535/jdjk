@@ -38,13 +38,16 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
         val cookie = Prefs.getCookie(ctx)
         Prefs.appendLog(ctx, "监控触发：检查 ${products.size} 个商品")
 
+        var index = 0
         for (p in products) {
+            index++
             // 清理历史误报：之前 HTML 解析抓到 1 元/3 元等占位价触发了 "已提醒"；
             // 若 lastPrice 低于目标价 20%，大概率是误抓，重置状态避免永远不再提醒
             if (p.notified && p.lastPrice > 0 && p.target > 0 && p.lastPrice < p.target * 0.2) {
                 p.notified = false
                 p.lastPrice = -1.0
             }
+            Prefs.appendLog(ctx, "▶ 第 $index/${products.size} 个：${p.name}")
             val sku = JdClient.extractSku(p.url)
             if (sku == null) {
                 Prefs.appendLog(ctx, "  ${p.name}：无法识别商品ID，跳过")

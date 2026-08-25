@@ -16,6 +16,11 @@ class PriceReaderService : AccessibilityService() {
         var lastPrice: Double? = null
             private set
 
+        // 读到价格时所在界面的包名（用于过滤本 App 自己的界面，防止读到"现价¥xxx"残留）
+        @Volatile
+        var lastPricePkg: String = ""
+            private set
+
         // 最近一屏文本（诊断用）
         @Volatile
         var lastPageText: String = ""
@@ -23,12 +28,7 @@ class PriceReaderService : AccessibilityService() {
 
         fun reset() {
             lastPrice = null
-        }
-
-        // 内部调试用（测试或手动修正）
-        fun update(price: Double?, text: String) {
-            lastPrice = price
-            lastPageText = text
+            lastPricePkg = ""
         }
 
         // 检测本 App 的无障碍服务是否已被用户开启
@@ -49,6 +49,10 @@ class PriceReaderService : AccessibilityService() {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
         ) return
+
+        // 关键：忽略本 App 自己的界面——否则会把本 App 商品列表里的"现价¥xxx"当成新价格读进去
+        val pkg = event.packageName?.toString() ?: return
+        if (pkg == packageName) return
 
         val root = rootInActiveWindow ?: return
         val sb = StringBuilder()
@@ -77,6 +81,7 @@ class PriceReaderService : AccessibilityService() {
             val v = m.groupValues[1].toDoubleOrNull()
             if (v != null && v >= 10 && v < 1000000) {
                 lastPrice = v
+                lastPricePkg = pkg
                 break
             }
         }
