@@ -139,7 +139,7 @@ object JdClient {
                     } else {
                         lastReturnedPrice = p
                         Prefs.appendLog(ctx, "    读屏成功：¥$p（来源 $pkg）")
-                        backToSelf(ctx)
+                        // 不回本 App，直接交给下一个商品连续跳转（趁"刚离开前台"宽限期完成跳转）
                         return p
                     }
                 }
@@ -148,7 +148,6 @@ object JdClient {
                     Prefs.appendLog(ctx, "    等待页面价格…（${(System.currentTimeMillis() - start) / 1000}秒）")
                 }
             }
-            backToSelf(ctx)
             appendErr("读屏超时，屏幕文本=${PriceReaderService.lastPageText.take(140)}")
             Prefs.appendLog(ctx, "    读屏超时（${timeoutMs / 1000}秒）")
             null
@@ -159,10 +158,14 @@ object JdClient {
         }
     }
 
+    // 整轮检查完成后调用：跳回本 App（MonitorWorker 在所有商品检查完后调用一次）
+    fun roundDone(ctx: Context) {
+        backToSelf(ctx)
+    }
+
     // 读完价格后跳回本 App（优先特权通道，App 在后台时普通方式会被系统拦截）
     private fun backToSelf(ctx: Context) {
-        try {
-            val i = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+        try {            val i = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
             if (i != null) {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 if (!PriceReaderService.startActivitySafe(i)) {

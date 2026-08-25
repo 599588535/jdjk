@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         maybePromptAccessibility()
+        maybePromptOverlay()
     }
 
     override fun onResume() {
@@ -71,6 +72,27 @@ class MainActivity : AppCompatActivity() {
             .setMessage("后台静默抓价在你的网络下失败率高。\n\n开启「无障碍服务」后，每次检查会自动打开京东 App 的商品页，直接读取你看到的真实价格（含你的账号价），读完自动跳回。\n\n点「去开启」→ 在列表找到「京东降价监控」→ 打开开关。")
             .setPositiveButton("去开启") { _, _ ->
                 try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Exception) {}
+            }
+            .setNegativeButton("暂不", null)
+            .show()
+    }
+
+    // 引导开启悬浮窗权限：安卓不允许后台应用打开界面，开启后多个商品才能连续自动跳转
+    private fun maybePromptOverlay() {
+        if (android.provider.Settings.canDrawOverlays(this)) return
+        val sp = getSharedPreferences("jd_monitor_prefs", MODE_PRIVATE)
+        if (sp.getBoolean("saw_asked", false)) return
+        sp.edit().putBoolean("saw_asked", true).apply()
+        AlertDialog.Builder(this)
+            .setTitle("推荐：允许显示悬浮窗")
+            .setMessage("安卓系统禁止后台应用打开界面，会导致检查第二个商品时无法跳转。\n\n开启「显示在其他应用上层」后，多个商品就能全部自动连续检查。\n\n点「去开启」→ 找到「京东降价监控」→ 允许。")
+            .setPositiveButton("去开启") { _, _ ->
+                try {
+                    startActivity(Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:$packageName")
+                    ))
+                } catch (_: Exception) {}
             }
             .setNegativeButton("暂不", null)
             .show()

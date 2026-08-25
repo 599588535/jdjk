@@ -76,6 +76,8 @@ class MonitorWorker(appContext: Context, workerParams: WorkerParameters)
         }
         Prefs.saveProducts(ctx, products)
         Prefs.appendLog(ctx, "本轮检查完成")
+        // 整轮检查完成后跳回本 App（多个商品连续跳转，中间不回来）
+        JdClient.roundDone(ctx)
         return Result.success()
     }
 
